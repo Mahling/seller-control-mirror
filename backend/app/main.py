@@ -5,8 +5,8 @@ EXEMPT_PREFIXES = ("/health","/login","/api/login","/openapi.json","/docs","/red
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.core.config import get_settings
-from app.api.routers import auth as auth_router
-from app.api.routers import ui as ui_router
+from app.api.routers.auth import router as auth_router
+from app.api.routers.ui import router as ui_router
 from app.db.base import Base
 from app.db.session import engine
 
