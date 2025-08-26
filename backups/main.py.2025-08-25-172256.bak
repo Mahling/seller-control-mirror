@@ -1,0 +1,241 @@
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
+
+from fastapi import FastAPI, Request, Depends, Form, HTTPException
+from fastapi.responses import HTMLResponse
+from starlette.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+
+from .db import get_db
+from . import models
+from .crypto import encrypt, decrypt
+from .sp_api import pull_orders
+from .sp_api_reports_patch import (
+    fetch_returns_rows,
+    fetch_removals_rows,
+    fetch_adjustments_rows,
+    fetch_reimbursements_rows,
+)
+
+app = FastAPI()
+templates = Jinja2Templates(directory="templates")
+
+
+def _try_parse_dt(s: Optional[str]):
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request, db: Session = Depends(get_db)):
+    accounts = db.query(models.SellerAccount).order_by(models.SellerAccount.id.asc()).all()
+    orders = (
+        db.query(models.Order)
+        .order_by(models.Order.purchase_date.desc().nullslast())
+        .limit(30)
+        .all()
+    )
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "accounts": accounts,
+            "orders": orders,
+        },
+    )
+
+
+@app.post("/api/accounts", response_class=HTMLResponse)
+def create_account(
+    name: str = Form(...),
+    region: str = Form(...),
+    marketplaces: str = Form(...),
+    lwa_refresh_token: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    acc = models.SellerAccount(
+        name=(name or "").strip() or "Hauptkonto",
+        region=(region or "").strip() or "eu",
+        marketplaces=(marketplaces or "").strip() or "DE",
+        refresh_token=encrypt((lwa_refresh_token or "").strip()) if lwa_refresh_token else None,
+        active=True,
+    )
+    db.add(acc)
+    db.commit()
+    db.refresh(acc)
+    return HTMLResponse(
+        f"<div class='text-green-700'>Konto {acc.name} angelegt (ID {acc.id}).</div>",
+        status_code=200,
+    )
+
+
+@app.post("/api/accounts/{account_id}/toggle")
+def toggle_account(account_id: int, db: Session = Depends(get_db)):
+    acc = db.get(models.SellerAccount, account_id)
+    if not acc:
+        raise HTTPException(404, "Account not found")
+    # verschiedene Feldnamen tolerieren
+    if hasattr(acc, "is_active"):
+        acc.is_active = not bool(acc.is_active)
+    if hasattr(acc, "active"):
+        acc.active = not bool(getattr(acc, "active"))
+    db.commit()
+    return {"id": acc.id, "is_active": getattr(acc, "is_active", getattr(acc, "active", True))}
+
+
+@app.post("/api/orders/sync")
+def sync_orders(account_id: int, days: int = 7, db: Session = Depends(get_db)):
+    acc = db.get(models.SellerAccount, account_id)
+    if not acc:
+        return HTMLResponse("<div class='text-red-700'>Account nicht gefunden.</div>", status_code=200)
+
+    marketplaces = [m.strip().upper() for m in (acc.marketplaces or "DE").split(",") if m.strip()]
+    orders = pull_orders(
+        account_id=acc.id,
+        enc_refresh_token=acc.refresh_token,
+        marketplaces=marketplaces,
+        days=days,
+    )
+
+    inserted = 0
+    for o in orders:
+        db.add(
+            models.Order(
+                account_id=acc.id,
+                order_id=o.get("orderId"),
+                purchase_date=_try_parse_dt(o.get("purchaseDate")),
+                status=o.get("status") or "",
+                marketplace=o.get("marketplaceId") or "",
+                data=o,
+            )
+        )
+        inserted += 1
+
+        for it in o.get("items", []):
+            try:
+                price_val = it.get("price")
+                price_val = None if price_val in (None, "") else float(price_val)
+            except Exception:
+                price_val = None
+            if hasattr(models, "OrderItem"):
+                db.add(
+                    models.OrderItem(
+                        account_id=acc.id,
+                        order_id=o.get("orderId"),
+                        asin=it.get("asin"),
+                        sku=it.get("sku"),
+                        qty=it.get("qty"),
+                        price_amount=price_val,
+                    )
+                )
+
+    db.commit()
+    return {"synced": inserted}
+
+
+@app.post("/api/reports/pull", response_class=HTMLResponse)
+def pull_reports(account_id: int, days: int = 30, db: Session = Depends(get_db)):
+    acc = db.get(models.SellerAccount, account_id)
+    if not acc:
+        return HTMLResponse("<div class='text-red-700'>Account nicht gefunden.</div>", status_code=200)
+
+    now = datetime.utcnow()
+    safe_end = now - timedelta(minutes=5)
+    safe_start = safe_end - timedelta(days=days)
+
+    rets = fetch_returns_rows(acc.id, acc.refresh_token, safe_start, safe_end)
+    rems = fetch_removals_rows(acc.id, acc.refresh_token, safe_start, safe_end)
+    adjs = fetch_adjustments_rows(acc.id, acc.refresh_token, safe_start, safe_end)
+    reims = fetch_reimbursements_rows(acc.id, acc.refresh_token, safe_start, safe_end)
+
+    print(
+        f"[reports] returns={len(rets)} removals={len(rems)} adjustments={len(adjs)} reimbursements={len(reims)} window={safe_start}..{safe_end}"
+    )
+
+    from decimal import Decimal
+
+    for r in rets:
+        db.add(
+            models.FbaReturn(
+                account_id=acc.id,
+                return_date=_try_parse_dt(r.get("return_date")),
+                order_id=r.get("order_id"),
+                asin=r.get("asin"),
+                sku=r.get("sku"),
+                disposition=r.get("disposition"),
+                reason=r.get("reason"),
+                quantity=r.get("quantity"),
+                fc=r.get("fc"),
+                raw=r.get("raw"),
+            )
+        )
+
+    for r in rems:
+        db.add(
+            models.FbaRemoval(
+                account_id=acc.id,
+                removal_order_id=r.get("removal_order_id"),
+                order_type=r.get("order_type"),
+                status=r.get("status"),
+                request_date=_try_parse_dt(r.get("request_date")),
+                shipped_date=_try_parse_dt(r.get("shipped_date")),
+                received_date=_try_parse_dt(r.get("received_date")),
+                asin=r.get("asin"),
+                sku=r.get("sku"),
+                quantity=r.get("quantity"),
+                disposition=r.get("disposition"),
+                raw=r.get("raw"),
+            )
+        )
+
+    for r in adjs:
+        db.add(
+            models.FbaInventoryAdjustment(
+                account_id=acc.id,
+                adjustment_date=_try_parse_dt(r.get("adjustment_date")),
+                asin=r.get("asin"),
+                sku=r.get("sku"),
+                quantity=r.get("quantity"),
+                reason=r.get("reason"),
+                fc=r.get("fc"),
+                raw=r.get("raw"),
+            )
+        )
+
+    for r in reims:
+        try:
+            amt = Decimal(str(r.get("amount"))) if r.get("amount") is not None else Decimal("0")
+        except Exception:
+            amt = Decimal("0")
+        db.add(
+            models.FbaReimbursement(
+                account_id=acc.id,
+                posted_date=_try_parse_dt(r.get("posted_date")),
+                case_id=r.get("case_id"),
+                asin=r.get("asin"),
+                sku=r.get("sku"),
+                quantity=r.get("quantity"),
+                amount=amt,
+                currency=r.get("currency"),
+                reason=r.get("reason"),
+                raw=r.get("raw"),
+            )
+        )
+
+    db.commit()
+
+    msg = f"Reports: returns={len(rets)}, removals={len(rems)}, adjustments={len(adjs)}, reimbursements={len(reims)}"
+    if (len(rets) + len(rems) + len(adjs) + len(reims)) == 0:
+        msg += " — (Hinweis: Zeitraum/Permissions? Endzeit >=5 Min Puffer; Rollen 'Versand durch Amazon' & 'Lagerbestand' aktiv?)"
+    return HTMLResponse(f"<div class='text-green-700'>{msg}</div>", status_code=200)
+
+
+@app.post("/api/recon/run", response_class=HTMLResponse)
+def run_recon(account_id: int, db: Session = Depends(get_db)):
+    return HTMLResponse("<div class='text-green-700'>Recon gestartet und abgeschlossen (Stub).</div>", status_code=200)

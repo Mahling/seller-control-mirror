@@ -1,0 +1,22 @@
+# Secrets / Environment
+.env
+*.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+
+# Local venv
+venv/
+.venv/
+
+# OS / Misc
+.DS_Store
+*.log
+
+# Docker Volumes (falls lokal)
+docker-data/
+db-data/
+pgdata/
+data/

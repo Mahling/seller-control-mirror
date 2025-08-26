@@ -1,0 +1,124 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Seller-Control Dashboard</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 text-slate-900">
+  <div class="max-w-7xl mx-auto p-6 space-y-6">
+    <header class="flex items-center justify-between">
+      <h1 class="text-2xl font-bold">Seller-Control Dashboard (Multi-Account)</h1>
+      <a href="/docs" class="text-blue-600 underline">API Docs</a>
+    </header>
+
+    <!-- Accounts -->
+    <section class="bg-white shadow rounded-2xl p-4">
+      <h2 class="text-xl font-semibold mb-4">Accounts</h2>
+      <div class="mb-3">
+        <a href="/oauth/start" class="inline-block px-4 py-2 rounded-lg bg-black text-white">Mit Amazon verbinden</a>
+      </div>
+      <div class="grid md:grid-cols-3 gap-4">
+        {% for a in accounts %}
+        <div class="border rounded-xl p-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="font-semibold">{{ a.name }}</div>
+              <div class="text-sm text-slate-500">{{ a.region }} · {{ a.marketplaces }}</div>
+            </div>
+            <form hx-post="/api/accounts_form/{{ a.id }}/toggle" hx-swap="none">
+              <button class="px-3 py-1 rounded-lg border {% if a.is_active %}bg-green-50 border-green-300{% else %}bg-slate-50 border-slate-300{% endif %}">
+                {% if a.is_active %}Active{% else %}Inactive{% endif %}
+              </button>
+            </form>
+          </div>
+          <div class="mt-3 flex gap-2">
+        {% set account = acc if acc is defined else a %}
+        {% set account = acc if acc is defined else a %}
+        <button class="px-3 py-1 rounded-lg border" hx-post="/api/orders/sync?account_id={{ account.id }}&days=7" hx-target="#toast" hx-swap="innerHTML">Sync Orders</button>
+        <button class="px-3 py-1 rounded-lg border" hx-get="/api/accounts/{{ account.id }}/edit" hx-target="#acc-{{ account.id }}-edit" hx-swap="innerHTML">Bearbeiten</button>
+        <button class="px-3 py-1 rounded-lg border" hx-post="/api/reports/pull?account_id={{ account.id }}" hx-target="#toast" hx-swap="innerHTML">Pull Reports</button>
+        <div id="acc-{{ account.id }}-edit" class="mt-2"></div>
+        <button class="px-3 py-1 rounded-lg border" hx-post="/api/recon/run?account_id={{ account.id }}" hx-target="#recon-area" hx-swap="innerHTML">Run Recon</button>
+          </div>
+        </div>
+        {% endfor %}
+
+        <!-- Add account card -->
+        <div class="border rounded-xl p-4">
+          <form class="space-y-2" hx-post="/api/accounts_form" hx-target="#toast" hx-swap="innerHTML">
+            <div class="font-semibold">Neues Konto</div>
+            <input class="w-full border rounded-lg px-3 py-2" name="name" placeholder="Name (z.B. Hauptkonto)" required/>
+            <input class="w-full border rounded-lg px-3 py-2" name="region" placeholder="eu/us/fe" value="eu"/>
+            <input class="w-full border rounded-lg px-3 py-2" name="marketplaces" placeholder="DE,FR,IT,ES" value="DE,FR,IT,ES"/>
+            <textarea class="w-full border rounded-lg px-3 py-2" name="refresh_token" placeholder="LWA Refresh Token" required></textarea>
+            <details class="text-sm text-slate-500">
+              <summary>Optionale Overrides (leer lassen, um .env zu nutzen)</summary>
+              <input class="w-full border rounded-lg px-3 py-2" name="lwa_client_id" placeholder="LWA Client ID"/>
+              <input class="w-full border rounded-lg px-3 py-2" name="lwa_client_secret" placeholder="LWA Client Secret"/>
+              <input class="w-full border rounded-lg px-3 py-2" name="aws_access_key" placeholder="AWS Access Key"/>
+              <input class="w-full border rounded-lg px-3 py-2" name="aws_secret_key" placeholder="AWS Secret Key"/>
+              <input class="w-full border rounded-lg px-3 py-2" name="role_arn" placeholder="Role ARN (optional)"/>
+            </details>
+            <button class="px-3 py-2 rounded-lg border w-full">Konto hinzufügen</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- KPIs & Recon -->
+    <section class="bg-white shadow rounded-2xl p-4">
+      <h2 class="text-xl font-semibold mb-4">Abgleich (Recon) – Offene Fälle</h2>
+      <form class="flex gap-2 items-center" onsubmit="loadOpenIssues(event)">
+        <input id="accountIdInput" class="border rounded-lg px-3 py-2 w-40" placeholder="Account ID" required/>
+        <button class="px-3 py-2 rounded-lg border">Laden</button>
+      </form>
+      <div id="openIssues" class="mt-4 overflow-x-auto"></div>
+    </section>
+
+    <div id="toast" class="text-sm text-slate-600"></div>
+  </div>
+
+<script>
+async function loadOpenIssues(e){
+  e.preventDefault();
+  const accId = document.getElementById('accountIdInput').value;
+  const res = await fetch(`/api/recon/open?account_id=${encodeURIComponent(accId)}`);
+  const data = await res.json();
+  const el = document.getElementById('openIssues');
+  if(!Array.isArray(data) || data.length===0){
+    el.innerHTML = '<div class="text-slate-500">Keine offenen Fälle</div>';
+    return;
+  }
+  const rows = data.map(r => \`
+    <tr class="border-b">
+      <td class="px-3 py-2 font-mono">\${r.asin||''}</td>
+      <td class="px-3 py-2 font-mono">\${r.sku||''}</td>
+      <td class="px-3 py-2 text-right">\${r.lost||0}</td>
+      <td class="px-3 py-2 text-right">\${r.damaged||0}</td>
+      <td class="px-3 py-2 text-right">\${r.found||0}</td>
+      <td class="px-3 py-2 text-right">\${r.reimbursed||0}</td>
+      <td class="px-3 py-2 text-right font-semibold">\${r.open_units||0}</td>
+    </tr>\`).join('');
+  el.innerHTML = \`
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-left border-b">
+          <th class="px-3 py-2">ASIN</th>
+          <th class="px-3 py-2">SKU</th>
+          <th class="px-3 py-2 text-right">Lost</th>
+          <th class="px-3 py-2 text-right">Damaged</th>
+          <th class="px-3 py-2 text-right">Found</th>
+          <th class="px-3 py-2 text-right">Reimbursed</th>
+          <th class="px-3 py-2 text-right">Open</th>
+        </tr>
+      </thead>
+      <tbody>\${rows}</tbody>
+    </table>\`;
+}
+</script>
+<div id="recon-area" class="p-3"></div>
+</body>
+</html>
