@@ -1,50 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="https://github.com/Mahling/seller-control-mirror.git"
-APP_DIR="/opt/seller-control"
+FORCE=0
+if [ "${1:-}" = "-f" ]; then FORCE=1; fi
 
-cd "$APP_DIR"
+cd /opt/seller-control
 
-# Git sauber aktualisieren
-if [ ! -d .git ]; then
-  git init
-  git remote add origin "$REPO_URL" || true
-fi
-git fetch --prune origin main
-git reset --hard origin/main
-
-# .env muss vorhanden sein
-if [ ! -f .env ]; then
-  cat <<'EOT'
-❌ .env fehlt unter /opt/seller-control
-Lege sie an, z. B.:
-LWA_CLIENT_ID=amzn1.application-oa2-client.XXXX
-LWA_CLIENT_SECRET=amzn1.oa2-cs.v1.XXXX
-NO_AWS_MODE=1
-SP_REGION=eu
-DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/postgres
-EOT
-  exit 1
+# Repo aktualisieren
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git fetch --prune
+  git reset --hard origin/main
+else
+  git clone https://github.com/Mahling/seller-control-mirror.git /opt/seller-control
 fi
 
-# docker compose wrapper (unterstützt "docker compose" und "docker-compose")
-dcompose() {
-  if command -v docker-compose >/dev/null 2>&1; then
-    docker-compose "$@"
-  else
-    docker compose "$@"
-  fi
-}
+# .env muss lokal vorhanden sein
+[ -f .env ] || { echo "❌ .env fehlt unter /opt/seller-control"; exit 1; }
 
-# Images ziehen/neu bauen & starten
-dcompose pull || true
-dcompose up -d --build --remove-orphans
+# Container neu bauen; bei -f ohne Cache
+docker compose down || true
+if [ "$FORCE" = "1" ]; then
+  docker compose build --no-cache api
+else
+  docker compose build api
+fi
+docker compose up -d --remove-orphans
 
-# DB-Migration (nicht fatal, wenn Alembic nicht konfiguriert)
-dcompose exec -T api alembic upgrade head || true
+# Datenbank migrieren (fehler tolerieren, falls Alembic nicht konfiguriert)
+docker compose exec -T api alembic upgrade head || true
 
-# Aufräumen
-docker image prune -f || true
-
-echo "✅ Update/Deploy fertig."
+# Logs anzeigen (strg+c zum Beenden)
+docker compose logs -f api
