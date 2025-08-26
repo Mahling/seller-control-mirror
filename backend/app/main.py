@@ -16,19 +16,19 @@ from .sp_api_reports_patch import (
     fetch_removals_rows,
     fetch_adjustments_rows,
     fetch_reimbursements_rows,
-)
 
 app = FastAPI()
+app.add_middleware(SessionMiddleware, secret_key=os.environ.get('SESSION_SECRET', 'changeme'), same_site='lax')
+
 # --- sessions: muss vor jedem Middleware/Guard liegen, der request.session nutzt ---
 app.add_middleware(
-app.add_middleware(SessionMiddleware, secret_key=os.environ.get('SESSION_SECRET', 'changeme'), same_site='lax')
+, same_site='lax')
 
 
     secret_key=os.getenv("SESSION_SECRET", "dev-secret"),
     max_age=60*60*24*14,   # 14 Tage
     same_site="lax",
     https_only=True,
-)
 
 templates = Jinja2Templates(directory="templates")
 
@@ -52,12 +52,10 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         .order_by(models.Order.purchase_date.desc().nullslast())
         .limit(30)
         .all()
-    )
+
     return templates.TemplateResponse(
         "index.html",
         {"request": request, "accounts": accounts, "orders": orders},
-    )
-
 
 @app.post("/api/accounts", response_class=HTMLResponse)
 def create_account(
@@ -73,15 +71,13 @@ def create_account(
         marketplaces=(marketplaces or "").strip() or "DE",
         refresh_token=encrypt((lwa_refresh_token or "").strip()) if lwa_refresh_token else None,
         active=True,
-    )
+
     db.add(acc)
     db.commit()
     db.refresh(acc)
     return HTMLResponse(
         f"<div class='text-green-700'>Konto {acc.name} angelegt (ID {acc.id}).</div>",
         status_code=200,
-    )
-
 
 @app.post("/api/accounts/{account_id}/toggle")
 def toggle_account(account_id: int, db: Session = Depends(get_db)):
@@ -129,8 +125,8 @@ def api_sync_orders(account_id: int, days: int = 7, db: Session = Depends(get_db
                 status=(o.get("status") or "")[:20],           # hart auf 20 gekappt
                 marketplace=(o.get("marketplaceId") or "")[:20],# sicher < 20
                 data=o,
-            )
-        )
+
+
         inserted += 1
 
         # Optional: Items (wenn Model vorhanden)
@@ -149,8 +145,7 @@ def api_sync_orders(account_id: int, days: int = 7, db: Session = Depends(get_db
                         sku=it.get("sku"),
                         qty=it.get("qty"),
                         price_amount=price_val,
-                    )
-                )
+
 
     db.commit()
     return {"synced": inserted}
@@ -191,8 +186,7 @@ def api_pull_reports(account_id: int, days: int = 30, db: Session = Depends(get_
                 quantity=r.get("quantity"),
                 fc=r.get("fc"),
                 raw=r.get("raw"),
-            )
-        )
+
 
     for r in rems:
         db.add(
@@ -209,8 +203,7 @@ def api_pull_reports(account_id: int, days: int = 30, db: Session = Depends(get_
                 quantity=r.get("quantity"),
                 disposition=r.get("disposition"),
                 raw=r.get("raw"),
-            )
-        )
+
 
     for r in adjs:
         db.add(
@@ -223,8 +216,7 @@ def api_pull_reports(account_id: int, days: int = 30, db: Session = Depends(get_
                 reason=r.get("reason"),
                 fc=r.get("fc"),
                 raw=r.get("raw"),
-            )
-        )
+
 
     for r in reims:
         try:
@@ -243,8 +235,7 @@ def api_pull_reports(account_id: int, days: int = 30, db: Session = Depends(get_
                 currency=r.get("currency"),
                 reason=r.get("reason"),
                 raw=r.get("raw"),
-            )
-        )
+
 
     db.commit()
     msg = f"Reports: returns={len(rets)}, removals={len(rems)}, adjustments={len(adjs)}, reimbursements={len(reims)}"
@@ -394,7 +385,6 @@ from sqlalchemy.orm import Session as SASession
 from .auth import ensure_users_table, find_user, verify_password
 
 # Session-Cookies signieren
-)
 
 # Guard-Middleware: ohne Login -> redirect /login (HTML) bzw. 401 (API)
 @app.middleware("http")
@@ -409,7 +399,7 @@ async def _auth_guard(request: Request, call_next):
         or path == "/healthz"
         # statics, wenn du welche hast:
         or path.startswith("/static")
-    )
+
     if public:
         return await call_next(request)
     if request.session.get("uid"):
