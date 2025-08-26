@@ -16,3 +16,6 @@ def create(db: Session, email: str, username: str, password_hash: str, is_admin:
     db.commit()
     db.refresh(user)
     return user.id
+def get_by_login(db: Session, login: str) -> Optional[User]:
+    """Backward-Compat: wird vom Auth-Router importiert."""
+    return get_by_email_or_username(db, login)
