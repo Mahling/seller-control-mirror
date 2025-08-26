@@ -1,4 +1,16 @@
 seller.mahling.me {
-    encode gzip
-    reverse_proxy api:8088
+  encode zstd gzip
+
+  # Reihenfolge garantiert: erst Redirect auf /ui, sonst Proxy.
+  route {
+    @root path /
+    redir @root /ui 307
+
+    reverse_proxy http://172.28.0.10:8088 {
+      # Healthcheck auf stets öffentliche Ressource
+      health_uri /openapi.json
+      health_interval 10s
+      health_timeout 3s
+    }
+  }
 }

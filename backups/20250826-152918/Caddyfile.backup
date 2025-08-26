@@ -1,0 +1,4 @@
+seller.mahling.me {
+    encode gzip
+    reverse_proxy api:8088
+}

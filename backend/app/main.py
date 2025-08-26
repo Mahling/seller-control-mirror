@@ -17,7 +17,13 @@ app = FastAPI(title="Seller Control", docs_url=None, redoc_url=None)
 app.include_router(auth_router)
 
 # Sessions (vor Routern/Middleware)
-app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET, same_site="lax", https_only=False)
+app.add_middleware(SessionMiddleware,
+    secret_key=settings.SESSION_SECRET,
+    same_site="none",
+    https_only=True,
+    session_cookie="session",
+    max_age=14*24*3600
+)
 
 # Router registrieren
 app.include_router(ui_router)

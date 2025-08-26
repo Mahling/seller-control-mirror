@@ -1,0 +1,19 @@
+# Managed by apply-fixes.sh (Backup: backups/20250826-152918/Caddyfile.backup)
+seller.mahling.me {
+    encode zstd gzip
+
+    # 1) Root -> /ui VOR dem Proxy behandeln
+    @root path /
+    handle @root {
+        redir /ui 307
+    }
+
+    # 2) Alles andere an die API (statische IP) + Healthcheck
+    handle {
+        reverse_proxy http://172.28.0.10:8088 {
+            health_uri /api/whoami
+            health_interval 10s
+            health_timeout 3s
+        }
+    }
+}

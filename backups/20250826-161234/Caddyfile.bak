@@ -1,0 +1,16 @@
+seller.mahling.me {
+    encode zstd gzip
+
+    @root path /
+    handle @root {
+        redir /ui 307
+    }
+
+    handle {
+        reverse_proxy http://172.28.0.10:8088 {
+            health_uri /api/whoami
+            health_interval 10s
+            health_timeout 3s
+        }
+    }
+}
