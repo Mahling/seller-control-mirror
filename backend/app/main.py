@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -370,4 +371,104 @@ async function runRecon(){
 }
 </script>
 </body></html>"""
+
+
+
+# ======== AUTH & SESSIONS (appended) ========
+import os
+from fastapi import Request, Form, Depends
+from starlette.middleware.sessions import SessionMiddleware
+from starlette.responses import HTMLResponse, RedirectResponse, JSONResponse
+from sqlalchemy.orm import Session as SASession
+from .auth import ensure_users_table, find_user, verify_password
+
+# Session-Cookies signieren
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "change-me-please"))
+
+# Guard-Middleware: ohne Login -> redirect /login (HTML) bzw. 401 (API)
+@app.middleware("http")
+async def _auth_guard(request: Request, call_next):
+    path = request.url.path
+    public = (
+        path == "/login"
+        or path.startswith("/docs")
+        or path.startswith("/openapi.json")
+        or path.startswith("/api/auth/")
+        or path.startswith("/favicon")
+        or path == "/healthz"
+        # statics, wenn du welche hast:
+        or path.startswith("/static")
+    )
+    if public:
+        return await call_next(request)
+    if request.session.get("uid"):
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    return RedirectResponse("/login", status_code=302)
+
+# kleine Helfer
+def _get_db():
+    # nutzt dein bestehendes get_db-Dependency
+    from .main import get_db as _gdb   # type: ignore
+    return _gdb
+
+def _login_page(msg: str = "") -> str:
+    return f"""<!doctype html>
+<html lang='de'><head>
+<meta charset='utf-8'/>
+<meta name='viewport' content='width=device-width, initial-scale=1'/>
+<title>Login · Seller-Control</title>
+<link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head><body class="bg-gray-50 min-h-screen flex items-center justify-center">
+  <form method="post" action="/login" class="bg-white shadow rounded-2xl p-6 w-full max-w-md space-y-4">
+    <h1 class="text-xl font-semibold text-center">Anmeldung</h1>
+    {('<div class="text-red-600 text-sm text-center">'+msg+'</div>') if msg else ''}
+    <div>
+      <label class="block text-sm text-gray-600 mb-1">E-Mail oder Benutzername</label>
+      <input name="login" class="w-full border rounded-lg px-3 py-2" placeholder="you@example.com" required>
+    </div>
+    <div>
+      <label class="block text-sm text-gray-600 mb-1">Passwort</label>
+      <input name="password" type="password" class="w-full border rounded-lg px-3 py-2" required>
+    </div>
+    <button class="w-full bg-black text-white rounded-lg py-2">Einloggen</button>
+  </form>
+</body></html>"""
+
+@app.get("/login", response_class=HTMLResponse)
+def login_form(db: SASession = Depends(get_db)):
+    # sicherstellen, dass Tabelle existiert
+    ensure_users_table(db)
+    return HTMLResponse(_login_page())
+
+@app.post("/login")
+def login_submit(request: Request, login: str = Form(...), password: str = Form(...), db: SASession = Depends(get_db)):
+    ensure_users_table(db)
+    u = find_user(db, login)
+    if not u or not u["is_active"] or not verify_password(password, u["password_hash"]):
+        return HTMLResponse(_login_page("Anmeldung fehlgeschlagen."), status_code=401)
+    request.session["uid"] = int(u["id"])
+    return RedirectResponse("/", status_code=302)
+
+@app.post("/api/auth/logout")
+@app.post("/logout")
+def logout(request: Request):
+    request.session.clear()
+    # für API und Form gleichermaßen sinnvoll
+    if request.headers.get("accept", "").startswith("application/json"):
+        return {"ok": True}
+    return RedirectResponse("/login", status_code=302)
+
+@app.get("/api/auth/me")
+def me(request: Request, db: SASession = Depends(get_db)):
+    uid = request.session.get("uid")
+    if not uid:
+        return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    row = db.execute(
+        text("SELECT id, email, username FROM sc_users WHERE id=:i"),
+        {"i": uid},
+    ).mappings().first()
+    return row or JSONResponse({"detail": "not found"}, status_code=404)
+# ======== END AUTH ========
 
