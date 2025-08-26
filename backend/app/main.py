@@ -21,7 +21,9 @@ from .sp_api_reports_patch import (
 app = FastAPI()
 # --- sessions: muss vor jedem Middleware/Guard liegen, der request.session nutzt ---
 app.add_middleware(
-    SessionMiddleware,
+app.add_middleware(SessionMiddleware, secret_key=os.environ.get('SESSION_SECRET', 'changeme'), same_site='lax')
+
+
     secret_key=os.getenv("SESSION_SECRET", "dev-secret"),
     max_age=60*60*24*14,   # 14 Tage
     same_site="lax",
@@ -392,7 +394,7 @@ from sqlalchemy.orm import Session as SASession
 from .auth import ensure_users_table, find_user, verify_password
 
 # Session-Cookies signieren
-app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "change-me-please"))
+)
 
 # Guard-Middleware: ohne Login -> redirect /login (HTML) bzw. 401 (API)
 @app.middleware("http")
