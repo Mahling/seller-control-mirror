@@ -16,7 +16,7 @@ Base.metadata.create_all(bind=engine)
 settings = get_settings()
 app = FastAPI(title="Seller Control", docs_url=None, redoc_url=None)
 from app.api.routes.auth import router as auth_router
-app.include_router(auth_router, prefix="/api")
+app.include_router(auth_router)
 
 # Sessions (vor Routern/Middleware)
 app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET, same_site="lax", https_only=True)
