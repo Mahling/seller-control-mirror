@@ -1,0 +1,26 @@
+name: Mirror to public
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to public mirror
+        env:
+          GH_OWNER: ${{ secrets.MIRROR_OWNER }}
+          GH_REPO:  ${{ secrets.MIRROR_REPO }}
+          GH_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+        run: |
+          set -euo pipefail
+          MIRROR_URL="https://${GH_TOKEN}@github.com/${GH_OWNER}/${GH_REPO}.git"
+          git remote add mirror "$MIRROR_URL" || git remote set-url mirror "$MIRROR_URL"
+          git push --force --prune mirror +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/*
