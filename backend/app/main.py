@@ -1,24 +1,29 @@
 from sqlalchemy import text
 from datetime import datetime, timedelta
 from typing import Optional
-
 from fastapi import FastAPI, Request, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from starlette.templating import Jinja2Templates
 from sqlalchemy.orm import Session
-
 from .db import get_db
 from . import models
 from .crypto import encrypt
 from .sp_api import pull_orders
 from .sp_api_reports_patch import (
+import os
+from fastapi import FastAPI, Request, Form, Depends, status
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
+
+app = FastAPI()
+app.add_middleware(SessionMiddleware, secret_key=os.environ.get('SESSION_SECRET','changeme'), same_site='lax')
+
     fetch_returns_rows,
     fetch_removals_rows,
     fetch_adjustments_rows,
     fetch_reimbursements_rows,
-
-app = FastAPI()
-app.add_middleware(SessionMiddleware, secret_key=os.environ.get('SESSION_SECRET', 'changeme'), same_site='lax')
+, same_site='lax')
 
 # --- sessions: muss vor jedem Middleware/Guard liegen, der request.session nutzt ---
 app.add_middleware(
