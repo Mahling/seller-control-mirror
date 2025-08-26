@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request
 EXEMPT_PREFIXES = ("/health","/login","/api/login","/openapi.json","/docs","/redoc","/static","/favicon.ico")
 from fastapi.responses import RedirectResponse
-EXEMPT_PREFIXES = ("/health","/login","/api/login","/openapi.json","/docs","/redoc","/static","/favicon.ico")
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.core.config import get_settings
@@ -15,14 +14,12 @@ Base.metadata.create_all(bind=engine)
 
 settings = get_settings()
 app = FastAPI(title="Seller Control", docs_url=None, redoc_url=None)
-from app.api.routes.auth import router as auth_router
 app.include_router(auth_router)
 
 # Sessions (vor Routern/Middleware)
 app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET, same_site="lax", https_only=True)
 
 # Router registrieren
-app.include_router(auth_router)
 app.include_router(ui_router)
 
 # Fallback: Unauth → Login
