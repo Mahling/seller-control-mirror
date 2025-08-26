@@ -19,6 +19,15 @@ from .sp_api_reports_patch import (
 )
 
 app = FastAPI()
+# --- sessions: muss vor jedem Middleware/Guard liegen, der request.session nutzt ---
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET", "dev-secret"),
+    max_age=60*60*24*14,   # 14 Tage
+    same_site="lax",
+    https_only=True,
+)
+
 templates = Jinja2Templates(directory="templates")
 
 
