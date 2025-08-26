@@ -480,4 +480,3 @@ def me(request: Request, db: SASession = Depends(get_db)):
     ).mappings().first()
     return row or JSONResponse({"detail": "not found"}, status_code=404)
 # ======== END AUTH ========
-
