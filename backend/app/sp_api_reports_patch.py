@@ -167,34 +167,50 @@ def _to_int(v: Any) -> int | None:
         return None
 
 
-def _create_report_tolerant(account_id, enc_refresh_token, report_type, start, end, mk_ids):
-    mids = list(mk_ids or EU_DEFAULT_MIDS)
-    # Fallback: mind. DE/FR/IT/ES
-    if not mids:
-        mids = ['A1PA6795UKMFR9','A13V1IB3VIYZZH','APJ6JRA9NG5V4','A1RKKUPIHCS9HS']
-    while True:
-        body = {
-            "reportType": report_type,
-            "dataStartTime": _iso8601s(start),
-            "dataEndTime": _iso8601s(end),
-            "marketplaceIds": mids,
-        }
-        try:
-            r = _sp_request(account_id, enc_refresh_token, "POST", "/reports/2021-06-30/reports", body=body).json()
-            rep_id = (r.get("payload") or {}).get("reportId") or r.get("reportId")
+def _create_report_tolerant(account_id, enc_refresh_token, report_type, start, end, mk_ids=None):
+    """
+    Create SP-API report, normalize reportType, ensure marketplaceIds, and parse response robustly.
+    """
+    from datetime import timezone
+    from .sp_api import EU_MK_IDS, _sp_request
+
+    TYPE_MAP = {
+        "_GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA_": "GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA",
+        "_GET_FBA_FULFILLMENT_REMOVAL_ORDER_DETAIL_DATA_": "GET_FBA_FULFILLMENT_REMOVAL_ORDER_DETAIL_DATA",
+        "_GET_FBA_REIMBURSEMENTS_DATA_": "GET_FBA_REIMBURSEMENTS_DATA",
+        "_GET_FBA_INVENTORY_ADJUSTMENTS_DATA_": "GET_FBA_INVENTORY_ADJUSTMENTS_DATA",
+    }
+
+    rt = TYPE_MAP.get(report_type, report_type)
+    if isinstance(rt, str) and rt.startswith("_") and rt.endswith("_"):
+        rt = rt.strip("_")
+
+    def _iso(dt):
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.replace(microsecond=0).isoformat().replace("+00:00","Z")
+
+    # Default EU marketplaces, EXCLUDING BE (AMEN7PMS3EDDL führte zu 400)
+    eu_default = [mid for k, mid in EU_MK_IDS.items() if k != "BE"]
+    mids = mk_ids or eu_default
+
+    body = {
+        "reportType": rt,
+        "marketplaceIds": mids,
+        "dataStartTime": _iso(start),
+        "dataEndTime": _iso(end),
+    }
+
+    resp = _sp_request(account_id, enc_refresh_token, "POST", "/reports/2021-06-30/reports", body=body)
+    try:
+        j = resp.json()
+    except Exception:
+        j = {}
+
+    rep_id = (j.get("payload") or {}).get("reportId") or j.get("reportId")
     if not rep_id:
-        if "errors" in r:
-            raise RuntimeError(f"CreateReport returned errors: {r['errors']}")
-        raise RuntimeError(f"CreateReport unexpected response: {r}")
+        text = getattr(resp, "text", "")
+        raise RuntimeError(f"CreateReport unexpected response: status={resp.status_code}, json={j}, text={text[:300]}")
     return rep_id
-        except RuntimeError as e:
-            msg = str(e)
-            m = re.search(r"Invalid Marketplace Id (\w+)", msg)
-            if m:
-                bad = m.group(1)
-                if bad in mids:
-                    print(f"[reports] dropping invalid marketplaceId {bad} and retrying")
-                    mids.remove(bad)
-                    if mids:
-                        continue
-            raise

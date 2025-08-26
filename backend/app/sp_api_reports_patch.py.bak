@@ -1,163 +1,200 @@
 from __future__ import annotations
-from typing import Any, Dict, List
-from datetime import datetime, timedelta, timezone
-import csv, io, json, os, time, gzip, base64
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+import re
+from typing import List, Dict, Any
+from datetime import datetime
+import time, io, csv, gzip, httpx
 
-from .sp_api import _sp_request, _iso8601s  # nutzen deine bestehenden Helfer
-# Falls _iso8601s in sp_api fehlt, wurde er in früherem Patch hinzugefügt.
+# wir nutzen die vorhandenen SP-API Hilfen
+from .sp_api import _sp_request, _iso8601s, EU_MK_IDS
 
-# Reporttypen (häufig verwendete)
-R_CUSTOMER_RETURNS = "GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA"
-R_REMOVALS         = "GET_FBA_FULFILLMENT_REMOVAL_ORDER_DETAIL_DATA"
-R_ADJUSTMENTS      = "GET_FBA_FULFILLMENT_INVENTORY_ADJUSTMENTS_DATA"
-R_REIMBURSEMENTS   = "GET_FBA_REIMBURSEMENTS_DATA"
+# Fallback auf alle EU-Marketplaces, falls Amazon welche fordert
+EU_DEFAULT_MIDS = list(EU_MK_IDS.values())
 
-def _create_report(account_id:int, enc_refresh_token:str, report_type:str, start:datetime, end:datetime) -> str:
+# ✅ Offizielle Report-Typen für das FBA-Recon-Usecase
+R_CUSTOMER_RETURNS   = "GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA"
+R_REMOVALS           = "GET_FBA_FULFILLMENT_REMOVALS_ORDER_DETAIL_DATA"
+R_ADJUSTMENTS        = "GET_FBA_FULFILLMENT_INVENTORY_ADJUSTMENTS_DATA"
+R_REIMBURSEMENTS     = "GET_FBA_REIMBURSEMENTS_DATA"
+
+def _create_report(account_id:int, enc_refresh_token:str, report_type:str,
+                   start:datetime, end:datetime, marketplace_ids: List[str] | None = None) -> str:
     body = {
         "reportType": report_type,
         "dataStartTime": _iso8601s(start),
         "dataEndTime": _iso8601s(end),
     }
+    # Marketplace-IDs dazulegen (einige FBA-Reports erwarten sie)
+    body["marketplaceIds"] = marketplace_ids or EU_DEFAULT_MIDS
+
     r = _sp_request(account_id, enc_refresh_token, "POST", "/reports/2021-06-30/reports", body=body)
     j = r.json()
-    return j.get("reportId") or j.get("payload", {}).get("reportId")
+    payload = j.get("payload") or j
+    rep_id = payload.get("reportId")
+    if not rep_id:
+        raise RuntimeError(f"Create report failed: {j}")
+    return rep_id
 
-def _wait_report_done(account_id:int, enc_refresh_token:str, report_id:str, timeout_sec:int=120) -> Dict[str,Any]:
-    t0 = time.time()
+def _wait_report_done(account_id:int, enc_refresh_token:str, report_id:str,
+                      timeout:int = 360, sleep_s:int = 5) -> str:
+    deadline = time.time() + timeout
     while True:
         r = _sp_request(account_id, enc_refresh_token, "GET", f"/reports/2021-06-30/reports/{report_id}")
         j = r.json()
-        st = j.get("processingStatus") or j.get("payload", {}).get("processingStatus")
-        if st in ("DONE", "CANCELLED", "FATAL"):
-            return j
-        if time.time() - t0 > timeout_sec:
-            raise RuntimeError(f"Report {report_id} timed out with status {st}")
-        time.sleep(2)
+        p = j.get("payload") or j
+        st = p.get("processingStatus")
+        if st == "DONE":
+            doc_id = p.get("reportDocumentId")
+            if not doc_id:
+                raise RuntimeError(f"Missing document id: {j}")
+            return doc_id
+        if st in ("FATAL", "CANCELLED"):
+            raise RuntimeError(f"Report ended with status={st}: {j}")
+        if time.time() > deadline:
+            raise TimeoutError(f"Report not DONE within {timeout}s (last={st})")
+        time.sleep(sleep_s)
 
-def _get_document(account_id:int, enc_refresh_token:str, document_id:str) -> Dict[str,Any]:
-    r = _sp_request(account_id, enc_refresh_token, "GET", f"/reports/2021-06-30/documents/{document_id}")
-    return r.json()
-
-def _decrypt_if_needed(doc_meta:Dict[str,Any], content:bytes) -> bytes:
-    ed = doc_meta.get("encryptionDetails")
-    if not ed:
-        return content
-    key = base64.b64decode(ed["key"])
-    iv  = base64.b64decode(ed["initializationVector"])
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
-    dec = cipher.decryptor().update(content) + cipher.decryptor().finalize()
-    # PKCS#7 unpad
-    pad = dec[-1]
-    return dec[:-pad]
-
-def _decompress_if_needed(doc_meta:Dict[str,Any], content:bytes) -> bytes:
-    if doc_meta.get("compressionAlgorithm") == "GZIP":
-        return gzip.decompress(content)
-    return content
-
-def _download_document(url:str) -> bytes:
-    import httpx
+def _download_document(url: str, compression: str | None = None) -> bytes:
     with httpx.Client(timeout=60) as c:
         r = c.get(url)
         r.raise_for_status()
-        return r.content
+        data = r.content
+    # Viele FBA-Flatfiles sind GZIP-komprimiert
+    if compression and compression.upper() == "GZIP":
+        try:
+            data = gzip.decompress(data)
+        except Exception:
+            pass
+    return data
 
-def _norm(k:str) -> str:
-    return (k or "").strip().lower().replace(" ", "_").replace("-", "_")
+def _get_document_and_rows(account_id:int, enc_refresh_token:str, document_id:str) -> List[Dict[str, Any]]:
+    r = _sp_request(account_id, enc_refresh_token, "GET", f"/reports/2021-06-30/documents/{document_id}")
+    j = r.json()
+    p = j.get("payload") or j
+    url = p["url"]
+    compression = p.get("compressionAlgorithm")
+    raw = _download_document(url, compression)
 
-def _parse_delimited(text:str) -> List[Dict[str,Any]]:
-    # TSV oder CSV automatisch
+    text = raw.decode("utf-8", errors="replace")
     sample = text[:2000]
-    delim = "\t" if ("\t" in sample and "," not in sample.splitlines()[0]) else ","
-    reader = csv.DictReader(io.StringIO(text), delimiter=delim)
-    rows=[]
-    for row in reader:
-        rows.append({ _norm(k): (v.strip() if isinstance(v,str) else v) for k,v in row.items() })
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except Exception:
+        # einfache Heuristik für Tab vs. Komma
+        dialect = csv.excel_tab if sample.count("\t") > sample.count(",") else csv.excel
+
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    rows = [dict(r) for r in reader]
+    print(f"[reports] doc rows={len(rows)} head={rows[:2]}")
     return rows
 
-def _fetch_generic(account_id:int, enc_refresh_token:str, report_type:str, start:datetime, end:datetime) -> List[Dict[str,Any]]:
-    rep_id = _create_report(account_id, enc_refresh_token, report_type, start, end)
-    rep = _wait_report_done(account_id, enc_refresh_token, rep_id)
-    if (rep.get("processingStatus") or rep.get("payload",{}).get("processingStatus")) != "DONE":
-        return []
-    doc_id = rep.get("reportDocumentId") or rep.get("payload",{}).get("reportDocumentId")
-    meta = _get_document(account_id, enc_refresh_token, doc_id)
-    blob = _download_document(meta["url"])
-    blob = _decrypt_if_needed(meta, blob)
-    blob = _decompress_if_needed(meta, blob)
-    text = blob.decode("utf-8-sig", errors="replace")
-    return _parse_delimited(text)
+def _fetch_generic(account_id:int, enc_refresh_token:str, report_type:str,
+                   start:datetime, end:datetime, mk_ids: List[str] | None = None) -> List[Dict[str, Any]]:
+    rep_id = _create_report_tolerant(account_id, enc_refresh_token, report_type, start, end, mk_ids)
+    doc_id = _wait_report_done(account_id, enc_refresh_token, rep_id)
+    rows = _get_document_and_rows(account_id, enc_refresh_token, doc_id)
+    return rows
 
-# --- Spezifische Mapper ---
+# ---------- Public helpers (werden in main.py genutzt) ----------
 
-def fetch_returns_rows(account_id:int, enc_refresh_token:str, start:datetime, end:datetime) -> List[Dict[str,Any]]:
+def fetch_returns_rows(account_id:int, enc_refresh_token:str, start:datetime, end:datetime):
     rows = _fetch_generic(account_id, enc_refresh_token, R_CUSTOMER_RETURNS, start, end)
-    out=[]
+    out = []
     for r in rows:
         out.append({
-            "return_date": r.get("return_date") or r.get("date"),
-            "order_id": r.get("order_id"),
-            "asin": r.get("asin"),
-            "sku": r.get("sku"),
-            "disposition": r.get("disposition"),
-            "reason": r.get("reason"),
-            "quantity": int(r.get("quantity", "0") or 0),
-            "fc": r.get("fulfillment_center_id") or r.get("fulfillment_center"),
-            "raw": r
+            "return_date": r.get("return-date") or r.get("return_date") or r.get("ReturnDate"),
+            "order_id": r.get("order-id") or r.get("order_id") or r.get("OrderId"),
+            "asin": r.get("asin") or r.get("ASIN"),
+            "sku": r.get("sku") or r.get("seller-sku") or r.get("SellerSKU"),
+            "disposition": r.get("disposition") or r.get("Disposition"),
+            "reason": r.get("reason") or r.get("Reason"),
+            "quantity": _to_int(r.get("quantity") or r.get("Quantity")),
+            "fc": r.get("fulfillment-center-id") or r.get("fc"),
+            "raw": r,
         })
     return out
 
-def fetch_removals_rows(account_id:int, enc_refresh_token:str, start:datetime, end:datetime) -> List[Dict[str,Any]]:
+def fetch_removals_rows(account_id:int, enc_refresh_token:str, start:datetime, end:datetime):
     rows = _fetch_generic(account_id, enc_refresh_token, R_REMOVALS, start, end)
-    out=[]
+    out = []
     for r in rows:
-        qty = r.get("disposed_quantity") or r.get("shipped_quantity") or r.get("received_quantity") or r.get("quantity")
         out.append({
-            "removal_order_id": r.get("removal_order_id"),
-            "order_type": r.get("order_type"),
-            "status": r.get("status"),
-            "request_date": r.get("request_date") or r.get("creation_date"),
-            "shipped_date": r.get("shipped_date"),
-            "received_date": r.get("received_date"),
-            "asin": r.get("asin"),
-            "sku": r.get("sku"),
-            "quantity": int(qty or 0),
-            "disposition": r.get("disposition"),
-            "raw": r
+            "request_date": r.get("request-date") or r.get("request_date"),
+            "order_id": r.get("order-id") or r.get("order_id"),
+            "asin": r.get("asin") or r.get("ASIN"),
+            "sku": r.get("sku") or r.get("seller-sku") or r.get("SellerSKU"),
+            "quantity": _to_int(r.get("quantity")),
+            "disposition": r.get("disposition") or r.get("removal-disposition"),
+            "fc": r.get("fulfillment-center") or r.get("fc"),
+            "raw": r,
         })
     return out
 
-def fetch_adjustments_rows(account_id:int, enc_refresh_token:str, start:datetime, end:datetime) -> List[Dict[str,Any]]:
+def fetch_adjustments_rows(account_id:int, enc_refresh_token:str, start:datetime, end:datetime):
     rows = _fetch_generic(account_id, enc_refresh_token, R_ADJUSTMENTS, start, end)
-    out=[]
+    out = []
     for r in rows:
         out.append({
-            "adjustment_date": r.get("date") or r.get("transaction_date"),
+            "date": r.get("date") or r.get("posted-date") or r.get("adjusted-date"),
+            "fnsku": r.get("fnsku"),
+            "sku": r.get("sku") or r.get("seller-sku"),
             "asin": r.get("asin"),
-            "sku": r.get("sku"),
-            "quantity": int(r.get("quantity", "0") or 0),
-            "reason": r.get("reason") or r.get("adjustment_type"),
-            "fc": r.get("fulfillment_center_id") or r.get("fc"),
-            "raw": r
+            "quantity": _to_int(r.get("quantity") or r.get("quantity-adjusted") or r.get("quantity_total")),
+            "reason": r.get("reason") or r.get("adjustment-type"),
+            "raw": r,
         })
     return out
 
-def fetch_reimbursements_rows(account_id:int, enc_refresh_token:str, start:datetime, end:datetime) -> List[Dict[str,Any]]:
+def fetch_reimbursements_rows(account_id:int, enc_refresh_token:str, start:datetime, end:datetime):
     rows = _fetch_generic(account_id, enc_refresh_token, R_REIMBURSEMENTS, start, end)
-    out=[]
+    out = []
     for r in rows:
-        amt = r.get("amount_total") or r.get("amount") or r.get("amount_per_unit") or "0"
-        qty = r.get("quantity_reimbursed") or r.get("quantity") or "0"
         out.append({
-            "posted_date": r.get("posted_date") or r.get("date"),
-            "case_id": r.get("case_id") or r.get("claim_id"),
+            "reimbursed_date": r.get("reimbursed-date") or r.get("posted-date"),
+            "reason": r.get("reason-code") or r.get("reason"),
+            "amount": r.get("amount-per-unit") or r.get("amount-total") or r.get("amount"),
+            "currency": r.get("currency"),
+            "order_id": r.get("order-id") or r.get("order_id"),
             "asin": r.get("asin"),
-            "sku": r.get("sku"),
-            "quantity": int(qty or 0),
-            "amount": float(str(amt).replace(",",".")) if amt not in (None,"") else 0.0,
-            "currency": r.get("currency") or r.get("currency_code") or "EUR",
-            "reason": r.get("reason") or r.get("reimbursement_reason") or r.get("amount_type"),
-            "raw": r
+            "sku": r.get("sku") or r.get("seller-sku"),
+            "raw": r,
         })
     return out
+
+def _to_int(v: Any) -> int | None:
+    try:
+        return int(str(v).strip()) if v not in (None, "", "NA", "N/A") else None
+    except Exception:
+        return None
+
+
+def _create_report_tolerant(account_id, enc_refresh_token, report_type, start, end, mk_ids):
+    mids = list(mk_ids or EU_DEFAULT_MIDS)
+    # Fallback: mind. DE/FR/IT/ES
+    if not mids:
+        mids = ['A1PA6795UKMFR9','A13V1IB3VIYZZH','APJ6JRA9NG5V4','A1RKKUPIHCS9HS']
+    while True:
+        body = {
+            "reportType": report_type,
+            "dataStartTime": _iso8601s(start),
+            "dataEndTime": _iso8601s(end),
+            "marketplaceIds": mids,
+        }
+        try:
+            r = _sp_request(account_id, enc_refresh_token, "POST", "/reports/2021-06-30/reports", body=body).json()
+            rep_id = (r.get("payload") or {}).get("reportId") or r.get("reportId")
+    if not rep_id:
+        if "errors" in r:
+            raise RuntimeError(f"CreateReport returned errors: {r['errors']}")
+        raise RuntimeError(f"CreateReport unexpected response: {r}")
+    return rep_id
+        except RuntimeError as e:
+            msg = str(e)
+            m = re.search(r"Invalid Marketplace Id (\w+)", msg)
+            if m:
+                bad = m.group(1)
+                if bad in mids:
+                    print(f"[reports] dropping invalid marketplaceId {bad} and retrying")
+                    mids.remove(bad)
+                    if mids:
+                        continue
+            raise
