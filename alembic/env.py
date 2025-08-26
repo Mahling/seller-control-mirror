@@ -1,18 +1,18 @@
-from pathlib import Path
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
+import os, sys
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from app.core.config import get_settings
 from app.db.base import Base
 
 config = context.config
 settings = get_settings()
-
-# zur Laufzeit aus .env
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 if config.config_file_name is not None:
