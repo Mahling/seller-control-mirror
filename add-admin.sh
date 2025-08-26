@@ -1,23 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 cd /opt/seller-control
 
-EMAIL="${1:-}"; USERNAME="${2:-}"; PASS="${3:-}"
-[ -n "$EMAIL" ]    || read -rp "E-Mail: " EMAIL
-[ -n "$USERNAME" ] || read -rp "Benutzername: " USERNAME
-if [ -z "${PASS}" ]; then read -srp "Passwort: " PASS; echo; fi
+read -p "E-Mail: " EMAIL
+read -p "Benutzername: " USERNAME
+read -s -p "Passwort: " PASS
+echo
 
-# Ermitteln, ob der api-Container läuft
-CID="$(docker compose ps -q api || true)"
-RUNNER="exec -T"
-if [ -z "$CID" ] || [ "$(docker inspect -f '{{.State.Running}}' "$CID" 2>/dev/null || echo false)" != "true" ]; then
+# sicherstellen, dass die Container laufen (ohne Neu-Build)
+if ! docker compose ps api --format '{{.State}}' | grep -qi running; then
+  echo "ℹ️  Starte api & db ..."
+  docker compose up -d db api
+fi
+
+# wenn api läuft: exec, sonst (Fallback) run
+if docker compose ps api --format '{{.State}}' | grep -qi running; then
+  RUNNER="exec -T"
+else
   RUNNER="run --rm -T"
 fi
 
+# Benutzer anlegen
 docker compose $RUNNER api python - <<PY
 from sqlalchemy.orm import Session
 from app.auth import ensure_users_table, create_user
-from app.database import SessionLocal
+from app.db import SessionLocal  # <- richtiger Import
+
 db: Session = SessionLocal()
 try:
     ensure_users_table(db)
