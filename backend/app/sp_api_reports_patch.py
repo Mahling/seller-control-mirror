@@ -181,7 +181,12 @@ def _create_report_tolerant(account_id, enc_refresh_token, report_type, start, e
         }
         try:
             r = _sp_request(account_id, enc_refresh_token, "POST", "/reports/2021-06-30/reports", body=body).json()
-            return r["payload"]["reportId"]
+            rep_id = (r.get("payload") or {}).get("reportId") or r.get("reportId")
+    if not rep_id:
+        if "errors" in r:
+            raise RuntimeError(f"CreateReport returned errors: {r['errors']}")
+        raise RuntimeError(f"CreateReport unexpected response: {r}")
+    return rep_id
         except RuntimeError as e:
             msg = str(e)
             m = re.search(r"Invalid Marketplace Id (\w+)", msg)
