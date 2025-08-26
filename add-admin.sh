@@ -2,13 +2,20 @@
 set -euo pipefail
 cd /opt/seller-control
 
-read -rp "E-Mail: " EMAIL
-read -rp "Benutzername: " USERNAME
-read -srp "Passwort: " PASS; echo
+EMAIL="${1:-}"; USERNAME="${2:-}"; PASS="${3:-}"
+[ -n "$EMAIL" ]    || read -rp "E-Mail: " EMAIL
+[ -n "$USERNAME" ] || read -rp "Benutzername: " USERNAME
+if [ -z "${PASS}" ]; then read -srp "Passwort: " PASS; echo; fi
 
-docker compose exec -T api python - <<PY
+# Ermitteln, ob der api-Container läuft
+CID="$(docker compose ps -q api || true)"
+RUNNER="exec -T"
+if [ -z "$CID" ] || [ "$(docker inspect -f '{{.State.Running}}' "$CID" 2>/dev/null || echo false)" != "true" ]; then
+  RUNNER="run --rm -T"
+fi
+
+docker compose $RUNNER api python - <<PY
 from sqlalchemy.orm import Session
-from sqlalchemy import text
 from app.auth import ensure_users_table, create_user
 from app.database import SessionLocal
 db: Session = SessionLocal()
