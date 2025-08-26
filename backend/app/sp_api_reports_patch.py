@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 from typing import List, Dict, Any
 from datetime import datetime
 import time, io, csv, gzip, httpx
@@ -88,7 +89,7 @@ def _get_document_and_rows(account_id:int, enc_refresh_token:str, document_id:st
 
 def _fetch_generic(account_id:int, enc_refresh_token:str, report_type:str,
                    start:datetime, end:datetime, mk_ids: List[str] | None = None) -> List[Dict[str, Any]]:
-    rep_id = _create_report(account_id, enc_refresh_token, report_type, start, end, mk_ids)
+    rep_id = _create_report_tolerant(account_id, enc_refresh_token, report_type, start, end, mk_ids)
     doc_id = _wait_report_done(account_id, enc_refresh_token, rep_id)
     rows = _get_document_and_rows(account_id, enc_refresh_token, doc_id)
     return rows
@@ -164,3 +165,31 @@ def _to_int(v: Any) -> int | None:
         return int(str(v).strip()) if v not in (None, "", "NA", "N/A") else None
     except Exception:
         return None
+
+
+def _create_report_tolerant(account_id, enc_refresh_token, report_type, start, end, mk_ids):
+    mids = list(mk_ids or EU_DEFAULT_MIDS)
+    # Fallback: mind. DE/FR/IT/ES
+    if not mids:
+        mids = ['A1PA6795UKMFR9','A13V1IB3VIYZZH','APJ6JRA9NG5V4','A1RKKUPIHCS9HS']
+    while True:
+        body = {
+            "reportType": report_type,
+            "dataStartTime": _iso8601s(start),
+            "dataEndTime": _iso8601s(end),
+            "marketplaceIds": mids,
+        }
+        try:
+            r = _sp_request(account_id, enc_refresh_token, "POST", "/reports/2021-06-30/reports", body=body).json()
+            return r["payload"]["reportId"]
+        except RuntimeError as e:
+            msg = str(e)
+            m = re.search(r"Invalid Marketplace Id (\w+)", msg)
+            if m:
+                bad = m.group(1)
+                if bad in mids:
+                    print(f"[reports] dropping invalid marketplaceId {bad} and retrying")
+                    mids.remove(bad)
+                    if mids:
+                        continue
+            raise
