@@ -20,7 +20,7 @@ EU_DEFAULT_MIDS = [EU_MK_IDS[m] for m in ("DE","FR","IT","ES") if m in EU_MK_IDS
 # Offizielle SP-API Report-Typen (ohne führende/abschließende Unterstriche!)
 R_CUSTOMER_RETURNS   = "GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA"
 R_REMOVALS           = "GET_FBA_FULFILLMENT_REMOVAL_ORDER_DETAIL_DATA"
-R_ADJUSTMENTS        = "GET_FBA_INVENTORY_ADJUSTMENTS_DATA"
+R_ADJUSTMENTS = "GET_FBA_FULFILLMENT_INVENTORY_ADJUSTMENTS_DATA"
 R_REIMBURSEMENTS     = "GET_FBA_REIMBURSEMENTS_DATA"
 
 # Fallback-Mapping von numerischen Codes (falls je numerisch reingegeben)
