@@ -1,6 +1,5 @@
-from fastapi import APIRouter, Depends, Request, Form
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -9,23 +8,29 @@ from app.core.security import verify_password
 
 router = APIRouter()
 
-class LoginJSON(BaseModel):
-    identifier: str
-    password: str
-
 @router.post("/api/login")
-async def api_login(
-    request: Request,
-    db: Session = Depends(get_db),
-    # JSON-Body (optional)
-    payload: LoginJSON | None = None,
-    # Form-Felder (optional)
-    identifier: str | None = Form(default=None),
-    password: str | None = Form(default=None),
-):
-    # Werte aus JSON ODER Form holen
-    ident = identifier or (payload.identifier if payload else None)
-    pwd   = password   or (payload.password   if payload else None)
+async def api_login(request: Request, db: Session = Depends(get_db)):
+    ident = None
+    pwd = None
+
+    ctype = (request.headers.get("content-type") or "").lower()
+    # JSON-Body?
+    if ctype.startswith("application/json"):
+        try:
+            data = await request.json()
+            if isinstance(data, dict):
+                ident = data.get("identifier") or data.get("email") or data.get("username")
+                pwd = data.get("password")
+        except Exception:
+            pass
+    else:
+        # Form-Body (x-www-form-urlencoded / multipart)
+        try:
+            form = await request.form()
+            ident = form.get("identifier") or form.get("email") or form.get("username")
+            pwd = form.get("password")
+        except Exception:
+            pass
 
     if not ident or not pwd:
         return JSONResponse({"detail": "missing credentials"}, status_code=400)
@@ -41,8 +46,7 @@ async def api_login(
 
     # HTML-Client? -> Redirect (Support für ?next=)
     accept = request.headers.get("accept", "")
-    ctype  = request.headers.get("content-type", "")
-    if "text/html" in accept or "application/x-www-form-urlencoded" in ctype:
+    if "text/html" in accept or not ctype.startswith("application/json"):
         next_url = request.query_params.get("next") or "/"
         return RedirectResponse(next_url, status_code=303)
 
