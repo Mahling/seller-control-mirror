@@ -90,6 +90,9 @@ def _get_document_and_rows(account_id:int, enc_refresh_token:str, document_id:st
 def _fetch_generic(account_id:int, enc_refresh_token:str, report_type:str,
                    start:datetime, end:datetime, mk_ids: List[str] | None = None) -> List[Dict[str, Any]]:
     rep_id = _create_report_tolerant(account_id, enc_refresh_token, report_type, start, end, mk_ids)
+    if not rep_id:
+        print(f\"[reports] {report_type}: not allowed at this time – skipping.\")
+        return []
     doc_id = _wait_report_done(account_id, enc_refresh_token, rep_id)
     rows = _get_document_and_rows(account_id, enc_refresh_token, doc_id)
     return rows
@@ -177,11 +180,13 @@ def _create_report_tolerant(account_id, enc_refresh_token, report_type, start, e
 
     # MWS-Style -> SP-API Style Mapping (inkl. pluraler Fehlvariante)
     TYPE_MAP = {
+        "_GET_FBA_FULFILLMENT_INVENTORY_ADJUSTMENTS_DATA_": "GET_FBA_FULFILLMENT_INVENTORY_ADJUSTMENTS_DATA",
+        "_GET_FBA_INVENTORY_ADJUSTMENTS_DATA_": "GET_FBA_FULFILLMENT_INVENTORY_ADJUSTMENTS_DATA",
         "_GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA_": "GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA",
         "_GET_FBA_FULFILLMENT_REMOVAL_ORDER_DETAIL_DATA_": "GET_FBA_FULFILLMENT_REMOVAL_ORDER_DETAIL_DATA",
         "_GET_FBA_FULFILLMENT_REMOVALS_ORDER_DETAIL_DATA_": "GET_FBA_FULFILLMENT_REMOVAL_ORDER_DETAIL_DATA",  # fix plural
         "_GET_FBA_REIMBURSEMENTS_DATA_": "GET_FBA_REIMBURSEMENTS_DATA",
-        "_GET_FBA_INVENTORY_ADJUSTMENTS_DATA_": "GET_FBA_INVENTORY_ADJUSTMENTS_DATA",
+        "_GET_FBA_FULFILLMENT_INVENTORY_ADJUSTMENTS_DATA_": "GET_FBA_FULFILLMENT_INVENTORY_ADJUSTMENTS_DATA",
     }
 
     # Normalisieren
@@ -194,6 +199,8 @@ def _create_report_tolerant(account_id, enc_refresh_token, report_type, start, e
     # Sicherheitshalber upper-case
     rt = rt.upper()
 
+    if rt == 'GET_FBA_INVENTORY_ADJUSTMENTS_DATA':
+        rt = 'GET_FBA_FULFILLMENT_INVENTORY_ADJUSTMENTS_DATA'
     def _iso(dt):
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
@@ -217,6 +224,13 @@ def _create_report_tolerant(account_id, enc_refresh_token, report_type, start, e
         j = resp.json()
     except Exception:
         j = {}
+    # Tolerant: Wenn API meldet 'not allowed at this time', Report überspringen
+    if isinstance(j, dict) and 'errors' in j:
+        errs = j.get('errors') or []
+        msgs = ' | '.join(str(e.get('message','')) for e in errs if isinstance(e, dict))
+        if 'not allowed at this time' in msgs.lower():
+            return None
+
 
     rep_id = (j.get("payload") or {}).get("reportId") or j.get("reportId")
     if not rep_id:
