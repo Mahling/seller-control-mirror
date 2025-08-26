@@ -98,7 +98,7 @@ from fastapi import Request
 @router.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     # Wenn nicht eingeloggt, übernimmt die Middleware den Redirect auf /login
-    if not request.session.get("uid"):
+    if not (request.scope.get("session") or {}).get("uid"):
         return RedirectResponse("/login", status_code=307)
 
     username = request.session.get("username", "User")
