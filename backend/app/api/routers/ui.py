@@ -91,3 +91,40 @@ async def login_page():
 </body>
 </html>
     """
+
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import Request
+
+@router.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    # Wenn nicht eingeloggt, übernimmt die Middleware den Redirect auf /login
+    if not request.session.get("uid"):
+        return RedirectResponse("/login", status_code=307)
+
+    username = request.session.get("username", "User")
+    return f"""
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8"/>
+        <title>Seller Control – Dashboard</title>
+        <meta name="viewport" content="width=device-width,initial-scale=1"/>
+        <style>
+          body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 2rem; }}
+          .card {{ max-width: 560px; padding: 1.5rem; border: 1px solid #e5e7eb; border-radius: 12px; }}
+          .row {{ display: flex; gap: .75rem; align-items: center; }}
+          button {{ padding: .6rem 1rem; border-radius: 8px; border: 1px solid #d1d5db; background: white; cursor: pointer; }}
+          button:hover {{ background: #f3f4f6; }}
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1 style="margin-top:0;">👋 Hi {username}</h1>
+          <p>Du bist eingeloggt. Hier kommt dein Dashboard hin.</p>
+          <form class="row" method="post" action="/api/logout">
+            <button type="submit">Logout</button>
+          </form>
+        </div>
+      </body>
+    </html>
+    """

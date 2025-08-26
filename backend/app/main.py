@@ -30,6 +30,6 @@ async def force_auth_on_html(request: Request, call_next):
     if path.startswith("/api") or path.startswith("/login"):
         return await call_next(request)
     # HTML wants UI; if not logged in redirect to /login
-    if "text/html" in request.headers.get("accept","") and not request.scope.get("session", {}).get("uid"):
+    if "text/html" in request.headers.get("accept","") and not request.session.get("uid"):
         return RedirectResponse("/login")
     return await call_next(request)
